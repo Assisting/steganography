@@ -20,4 +20,4 @@
 # Go workspace file
 go.work
 
-output.png
+output.*

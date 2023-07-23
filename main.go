@@ -25,7 +25,6 @@ func hideBytes(carrier image.Image, message []byte) image.Image {
 	var endOfTransmission byte = 0b0000_0100
 	var bitMasks [8]byte = [8]byte{0b0000_0001, 0b0000_0010, 0b0000_0100, 0b0000_1000,
 		0b0001_0000, 0b0010_0000, 0b0100_0000, 0b1000_0000}
-	var rgbFactor uint32 = 257 // RGBA() returns images in the range [0, 65535] rather than [0, 255], but new colours need the second range.
 	var byteIndex, bitIndex int = 0, 0
 
 	message = append(message, endOfTransmission)
@@ -38,13 +37,13 @@ func hideBytes(carrier image.Image, message []byte) image.Image {
 			if !messageComplete {
 				red, green, blue, _ := carrier.At(x, y).RGBA()
 				var newRed, newGreen, newBlue uint8
-				newGreen = uint8(green / rgbFactor)
-				newBlue = uint8(blue / rgbFactor)
+				newGreen = uint8(green >> 8)
+				newBlue = uint8(blue >> 8)
 
 				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-					newRed = uint8(red/rgbFactor) | 0b0000_0001
+					newRed = uint8(red>>8) | 0b0000_0001
 				} else {
-					newRed = uint8(red/rgbFactor) & 0b1111_1110
+					newRed = uint8(red>>8) & 0b1111_1110
 				}
 				bitIndex++
 				if bitIndex >= 8 {
@@ -58,9 +57,9 @@ func hideBytes(carrier image.Image, message []byte) image.Image {
 				}
 
 				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-					newGreen = uint8(green/rgbFactor) | 0b0000_0001
+					newGreen = uint8(green>>8) | 0b0000_0001
 				} else {
-					newGreen = uint8(green/rgbFactor) & 0b1111_1110
+					newGreen = uint8(green>>8) & 0b1111_1110
 				}
 				bitIndex++
 				if bitIndex >= 8 {
@@ -74,9 +73,9 @@ func hideBytes(carrier image.Image, message []byte) image.Image {
 				}
 
 				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-					newBlue = uint8(blue/rgbFactor) | 0b0000_0001
+					newBlue = uint8(blue>>8) | 0b0000_0001
 				} else {
-					newBlue = uint8(blue/rgbFactor) & 0b1111_1110
+					newBlue = uint8(blue>>8) & 0b1111_1110
 				}
 				bitIndex++
 				if bitIndex >= 8 {
@@ -94,6 +93,57 @@ func hideBytes(carrier image.Image, message []byte) image.Image {
 	}
 
 	return newImage
+}
+
+func retrieveBytes(encodedImage image.Image) (message []byte) {
+	var endOfTransmission byte = 0b0000_0100
+	var bitIndex int = 0
+	var tempByte byte
+
+	bounds := encodedImage.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			red, green, blue, _ := encodedImage.At(x, y).RGBA()
+			red |= red >> 8
+			green |= green >> 8
+			blue |= blue >> 8
+
+			tempByte |= ((byte(red) & 0b0000_0001) << bitIndex)
+			bitIndex++
+			if bitIndex >= 8 {
+				if tempByte == endOfTransmission {
+					return message
+				}
+				message = append(message, tempByte)
+				tempByte = uint8(0)
+				bitIndex = 0
+			}
+
+			tempByte |= ((byte(green) & 0b0000_0001) << bitIndex)
+			bitIndex++
+			if bitIndex >= 8 {
+				if tempByte == endOfTransmission {
+					return message
+				}
+				message = append(message, tempByte)
+				tempByte = uint8(0)
+				bitIndex = 0
+			}
+
+			tempByte |= ((byte(blue) & 0b0000_0001) << bitIndex)
+			bitIndex++
+			if bitIndex >= 8 {
+				if tempByte == endOfTransmission {
+					return message
+				}
+				message = append(message, tempByte)
+				tempByte = uint8(0)
+				bitIndex = 0
+			}
+		}
+	}
+
+	return
 }
 
 func main() {
@@ -153,4 +203,21 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	encodedImageFile, err := os.Open("output.png")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	defer encodedImageFile.Close()
+
+	encodedImage, _, err := image.Decode(encodedImageFile)
+	if err != nil || encodedImage == nil {
+		fmt.Println(err)
+	}
+
+	decodedBytes := retrieveBytes(encodedImage)
+
+	os.WriteFile("output.txt", decodedBytes, 0666)
 }

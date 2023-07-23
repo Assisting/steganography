@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"image"
+	"image/color"
 	_ "image/jpeg"
+	"image/png"
 	_ "image/png"
 	"io"
 	"math"
@@ -18,6 +20,79 @@ func byteCapacity(carrier io.Reader) (int, error) {
 	imageSize := config.Height * config.Width
 	capacity := int(math.Floor(float64(imageSize*3.0)/8.0)) - 1
 	return capacity, nil
+}
+
+func hideBytes(carrier image.Image, message []byte) image.Image {
+	var endOfTransmission byte = 0b0000_0100
+	var bitMasks [8]byte = [8]byte{0b0000_0001, 0b0000_0010, 0b0000_0100, 0b0000_1000,
+		0b0001_0000, 0b0010_0000, 0b0100_0000, 0b1000_0000}
+	var byteIndex, bitIndex int = 0, 0
+
+	message = append(message, endOfTransmission)
+	messageComplete := false
+
+	bounds := carrier.Bounds()
+	newImage := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if !messageComplete {
+				red, green, blue, _ := carrier.At(x, y).RGBA()
+				var newRed, newGreen, newBlue uint8
+
+				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
+					newRed = uint8(red/257) | 0b0000_0001
+				} else {
+					newRed = uint8(red/257) & 0b1111_1110
+				}
+				bitIndex++
+				if bitIndex >= 8 {
+					bitIndex = 0
+					byteIndex++
+					if byteIndex >= len(message) {
+						messageComplete = true
+						newImage.Set(x, y, color.RGBA{newRed, uint8(green / 257), uint8(blue / 257), 255})
+						continue
+					}
+				}
+
+				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
+					newGreen = uint8(green/257) | 0b0000_0001
+				} else {
+					newGreen = uint8(green/257) & 0b1111_1110
+				}
+				bitIndex++
+				if bitIndex >= 8 {
+					bitIndex = 0
+					byteIndex++
+					if byteIndex >= len(message) {
+						messageComplete = true
+						newImage.Set(x, y, color.RGBA{newRed, newGreen, uint8(blue / 257), 255})
+						continue
+					}
+				}
+
+				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
+					newBlue = uint8(blue/257) | 0b0000_0001
+				} else {
+					newBlue = uint8(blue/257) & 0b1111_1110
+				}
+				bitIndex++
+				if bitIndex >= 8 {
+					bitIndex = 0
+					byteIndex++
+					if byteIndex >= len(message) {
+						messageComplete = true
+					}
+				}
+				newImage.Set(x, y, color.RGBA{newRed, newGreen, newBlue, 255})
+				//fmt.Printf("%v, %v, %v -> %v, %v, %v\n", uint8(red/257), uint8(green/257), uint8(blue/257), newRed, newGreen, newBlue)
+			} else {
+				newImage.Set(x, y, carrier.At(x, y))
+			}
+		}
+	}
+
+	return newImage
 }
 
 func main() {
@@ -46,20 +121,14 @@ func main() {
 		messageSource = os.Args[2]
 	}
 
-	messageFile, err := os.Open(messageSource)
+	messageFile, err := os.ReadFile(messageSource)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 
-	messageFileInfo, err := messageFile.Stat()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	if messageFileInfo.Size() > int64(capacity) {
-		fmt.Printf("Source file will not fit in destination, %v bytes greater than %v byte capacity\n", messageFileInfo.Size(), int64(capacity))
+	if len(messageFile) > capacity {
+		fmt.Printf("Source file will not fit in destination, %v bytes greater than %v byte capacity\n", len(messageFile), capacity)
 		return
 	}
 
@@ -70,4 +139,17 @@ func main() {
 		fmt.Println(err)
 	}
 	fmt.Println(imageType)
+
+	codedImage := hideBytes(imageData, messageFile)
+
+	newFile, err := os.Create("output.png")
+	if err != nil {
+		fmt.Println(err)
+	}
+	defer newFile.Close()
+
+	err = png.Encode(newFile, codedImage)
+	if err != nil {
+		fmt.Println(err)
+	}
 }

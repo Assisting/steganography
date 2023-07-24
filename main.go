@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	_ "image/jpeg"
 	"image/png"
 	"io"
@@ -17,6 +18,9 @@ func byteCapacity(carrier io.Reader) (int, error) {
 		return 0, err
 	}
 	imageSize := config.Height * config.Width
+	/* We can store 3 bits in each pixel, so the image's total pixel count * 3 gives us a number of bytes.
+	 * Divie by 8 for the number of bytes, which we floor, since we can't store a partial byte.
+	 * 1 is subtracted from the total to make room for the EOT signal byte. */
 	capacity := int(math.Floor(float64(imageSize*3.0)/8.0)) - 1
 	return capacity, nil
 }
@@ -27,68 +31,59 @@ func hideBytes(carrier image.Image, message []byte) image.Image {
 		0b0001_0000, 0b0010_0000, 0b0100_0000, 0b1000_0000}
 	var byteIndex, bitIndex int = 0, 0
 
-	message = append(message, endOfTransmission)
-	messageComplete := false
+	// EOT is added to signal to the decoder that it's reached the end of the encoded message
+	// NUL is added for the case where the message doesn't evenly divide by 3
+	message = append(message, endOfTransmission, 0b0000_0000)
+	messageLength := len(message) - 1
 
+	// Find edges of the existing image and create the canvas we'll be editing
 	bounds := carrier.Bounds()
 	newImage := image.NewRGBA(bounds)
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			if !messageComplete {
-				red, green, blue, _ := carrier.At(x, y).RGBA()
-				var newRed, newGreen, newBlue uint8
-				newGreen = uint8(green >> 8)
-				newBlue = uint8(blue >> 8)
+	draw.Draw(newImage, carrier.Bounds(), carrier, image.Point{}, draw.Over)
 
-				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-					newRed = uint8(red>>8) | 0b0000_0001
-				} else {
-					newRed = uint8(red>>8) & 0b1111_1110
-				}
-				bitIndex++
-				if bitIndex >= 8 {
-					bitIndex = 0
-					byteIndex++
-					if byteIndex >= len(message) {
-						messageComplete = true
-						newImage.Set(x, y, color.RGBA{newRed, newGreen, newBlue, 255})
-						continue
-					}
-				}
+	// Iterate over image
+	for y := bounds.Min.Y; y < bounds.Max.Y && byteIndex < messageLength; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X && byteIndex < messageLength; x++ {
+			// For performance reasons, the RGB channels of a colour are left-shifted 8 times. First we undo that.
+			red, green, blue, _ := carrier.At(x, y).RGBA()
+			newRed, newGreen, newBlue := uint8(red>>8), uint8(green>>8), uint8(blue>>8)
 
-				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-					newGreen = uint8(green>>8) | 0b0000_0001
-				} else {
-					newGreen = uint8(green>>8) & 0b1111_1110
-				}
-				bitIndex++
-				if bitIndex >= 8 {
-					bitIndex = 0
-					byteIndex++
-					if byteIndex >= len(message) {
-						messageComplete = true
-						newImage.Set(x, y, color.RGBA{newRed, newGreen, newBlue, 255})
-						continue
-					}
-				}
-
-				if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-					newBlue = uint8(blue>>8) | 0b0000_0001
-				} else {
-					newBlue = uint8(blue>>8) & 0b1111_1110
-				}
-				bitIndex++
-				if bitIndex >= 8 {
-					bitIndex = 0
-					byteIndex++
-					if byteIndex >= len(message) {
-						messageComplete = true
-					}
-				}
-				newImage.Set(x, y, color.RGBA{newRed, newGreen, newBlue, 255})
+			// Overwrite the least significant bit of the red channel with a data bit
+			if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
+				newRed |= 0b0000_0001
 			} else {
-				newImage.Set(x, y, carrier.At(x, y))
+				newRed &= 0b1111_1110
 			}
+			bitIndex++
+			if bitIndex >= 8 {
+				bitIndex = 0
+				byteIndex++
+			}
+
+			// Overwrite the least significant bit of the green channel with a data bit
+			if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
+				newGreen |= 0b0000_0001
+			} else {
+				newGreen &= 0b1111_1110
+			}
+			bitIndex++
+			if bitIndex >= 8 {
+				bitIndex = 0
+				byteIndex++
+			}
+
+			// Overwrite the least significant bit of the blue channel with a data bit
+			if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
+				newBlue |= 0b0000_0001
+			} else {
+				newBlue &= 0b1111_1110
+			}
+			bitIndex++
+			if bitIndex >= 8 {
+				bitIndex = 0
+				byteIndex++
+			}
+			newImage.Set(x, y, color.RGBA{newRed, newGreen, newBlue, 255})
 		}
 	}
 
@@ -103,39 +98,49 @@ func retrieveBytes(encodedImage image.Image) (message []byte) {
 	bounds := encodedImage.Bounds()
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			// For performance reasons, the RGB channels of a colour are left-shifted 8 times. First we undo that.
 			red, green, blue, _ := encodedImage.At(x, y).RGBA()
 			red |= red >> 8
 			green |= green >> 8
 			blue |= blue >> 8
 
+			// Add the red channel's data bit to our storage byte
 			tempByte |= ((byte(red) & 0b0000_0001) << bitIndex)
 			bitIndex++
 			if bitIndex >= 8 {
+				// End of coded message
 				if tempByte == endOfTransmission {
 					return message
 				}
+				// Add completed byte to message, start reading next byte
 				message = append(message, tempByte)
 				tempByte = uint8(0)
 				bitIndex = 0
 			}
 
+			// Add the green channel's data bit to our storage byte
 			tempByte |= ((byte(green) & 0b0000_0001) << bitIndex)
 			bitIndex++
 			if bitIndex >= 8 {
+				// End of coded message
 				if tempByte == endOfTransmission {
 					return message
 				}
+				// Add completed byte to message, start reading next byte
 				message = append(message, tempByte)
 				tempByte = uint8(0)
 				bitIndex = 0
 			}
 
+			// Add the blue channel's data bit to our storage byte
 			tempByte |= ((byte(blue) & 0b0000_0001) << bitIndex)
 			bitIndex++
 			if bitIndex >= 8 {
+				// End of coded message
 				if tempByte == endOfTransmission {
 					return message
 				}
+				// Add completed byte to message, start reading next byte
 				message = append(message, tempByte)
 				tempByte = uint8(0)
 				bitIndex = 0

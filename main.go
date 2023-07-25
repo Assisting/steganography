@@ -27,9 +27,7 @@ func byteCapacity(carrier io.Reader) (int, error) {
 
 func hideBytes(carrier image.Image, message []byte) image.Image {
 	var endOfTransmission byte = 0b0000_0100
-	var bitMasks [8]byte = [8]byte{0b0000_0001, 0b0000_0010, 0b0000_0100, 0b0000_1000,
-		0b0001_0000, 0b0010_0000, 0b0100_0000, 0b1000_0000}
-	var byteIndex, bitIndex int = 0, 0
+	var bitIndex int = 0
 
 	// EOT is added to signal to the decoder that it's reached the end of the encoded message
 	// NUL is added for the case where the message doesn't evenly divide by 3
@@ -42,47 +40,23 @@ func hideBytes(carrier image.Image, message []byte) image.Image {
 	draw.Draw(newImage, carrier.Bounds(), carrier, image.Point{}, draw.Over)
 
 	// Iterate over image
-	for y := bounds.Min.Y; y < bounds.Max.Y && byteIndex < messageLength; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X && byteIndex < messageLength; x++ {
+	for y := bounds.Min.Y; y < bounds.Max.Y && (bitIndex>>3 < messageLength); y++ {
+		for x := bounds.Min.X; x < bounds.Max.X && (bitIndex>>3 < messageLength); x++ {
 			// For performance reasons, the RGB channels of a colour are left-shifted 8 times. First we undo that.
 			red, green, blue, _ := carrier.At(x, y).RGBA()
 			newRed, newGreen, newBlue := uint8(red>>8), uint8(green>>8), uint8(blue>>8)
 
-			// Overwrite the least significant bit of the red channel with a data bit
-			if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-				newRed |= 0b0000_0001
-			} else {
-				newRed &= 0b1111_1110
-			}
+			// Overwrite the least significant bit of each channel with a data bit
+			newRed |= 0b0000_0001
+			newRed &= (message[bitIndex>>3] >> (bitIndex & 0b0000_0111)) | 0b1111_1110
 			bitIndex++
-			if bitIndex >= 8 {
-				bitIndex = 0
-				byteIndex++
-			}
+			newGreen |= 0b0000_0001
+			newGreen &= (message[bitIndex>>3] >> (bitIndex & 0b0000_0111)) | 0b1111_1110
+			bitIndex++
+			newBlue |= 0b0000_0001
+			newBlue &= (message[bitIndex>>3] >> (bitIndex & 0b0000_0111)) | 0b1111_1110
+			bitIndex++
 
-			// Overwrite the least significant bit of the green channel with a data bit
-			if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-				newGreen |= 0b0000_0001
-			} else {
-				newGreen &= 0b1111_1110
-			}
-			bitIndex++
-			if bitIndex >= 8 {
-				bitIndex = 0
-				byteIndex++
-			}
-
-			// Overwrite the least significant bit of the blue channel with a data bit
-			if (message[byteIndex] & bitMasks[bitIndex]) > 0 {
-				newBlue |= 0b0000_0001
-			} else {
-				newBlue &= 0b1111_1110
-			}
-			bitIndex++
-			if bitIndex >= 8 {
-				bitIndex = 0
-				byteIndex++
-			}
 			newImage.Set(x, y, color.RGBA{newRed, newGreen, newBlue, 255})
 		}
 	}
